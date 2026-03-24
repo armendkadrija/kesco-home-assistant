@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "KESCO Energy",
+        "description": "Enter your KESCO consumer portal credentials.",
+        "data": {
+          "username": "Username",
+          "password": "Password",
+          "agency_id": "Agency ID",
+          "debitor_id": "Debitor ID"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid username or password.",
+      "cannot_connect": "Could not connect to KESCO servers.",
+      "unknown": "Unexpected error — check the logs."
+    },
+    "abort": {
+      "already_configured": "This KESCO account is already configured."
+    }
+  }
+}
