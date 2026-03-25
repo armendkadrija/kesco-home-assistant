@@ -3,7 +3,7 @@
   "name": "KESCO Energy",
   "version": "1.0.0",
   "config_flow": true,
-  "documentation": "https://github.com/armendkadrija/home-assistant",
+  "documentation": "https://github.com/armendkadrija/kesco-home-assistant",
   "requirements": [],
   "codeowners": ["@armendkadrija"],
   "iot_class": "cloud_polling"

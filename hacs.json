@@ -1,0 +1,6 @@
+{
+  "name": "KESCO Energy",
+  "category": "integration",
+  "documentation": "https://github.com/armendkadrija/kesco-home-assistant",
+  "iot_class": "cloud_polling"
+}
