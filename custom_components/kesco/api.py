@@ -9,7 +9,7 @@ from typing import Any
 
 import aiohttp
 
-from .const import AUTH_URL, BALANCE_URL, INVOICES_URL, TOKEN_TTL_SECONDS
+from .const import AUTH_URL, BALANCE_URL, INVOICES_URL, NOTIFICATIONS_URL, TOKEN_TTL_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +55,11 @@ class KescoApiClient:
         """Return the account balance dict, re-authenticating if needed."""
         await self._ensure_token()
         return await self._fetch_balance()
+
+    async def async_get_notifications(self, page_size: int = 10) -> list[dict[str, Any]]:
+        """Return the latest notifications, re-authenticating if needed."""
+        await self._ensure_token()
+        return await self._fetch_notifications(page_size)
 
     async def async_validate_credentials(self) -> None:
         """Login once to verify credentials — raises KescoAuthError on failure."""
@@ -214,3 +219,45 @@ class KescoApiClient:
             raise KescoApiError(f"No balance object in response: {str(data)[:200]}")
 
         return balance
+
+    async def _fetch_notifications(self, page_size: int) -> list[dict[str, Any]]:
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/json",
+        }
+        params = {"pageSize": page_size, "pageNumber": 0}
+        try:
+            async with self._session.get(
+                NOTIFICATIONS_URL,
+                params=params,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                raw = await resp.text()
+                _LOGGER.debug("KESCO notifications response HTTP %s: %s", resp.status, raw[:200])
+                if resp.status == 401:
+                    self._token = None
+                    raise KescoAuthError("Bearer token rejected by notifications API")
+                if resp.status != 200:
+                    raise KescoApiError(
+                        f"Notifications endpoint returned HTTP {resp.status}: {raw[:200]}"
+                    )
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError as err:
+                    raise KescoApiError(
+                        f"Notifications response is not JSON: {raw[:200]}"
+                    ) from err
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.error("KESCO notifications fetch failed: %s: %s", type(err).__name__, err)
+            raise KescoApiError(f"Network error fetching notifications: {err}") from err
+
+        state = data.get("State")
+        if state != 1:
+            raise KescoApiError(f"Notifications API returned State={state}")
+
+        notifications = data.get("Data")
+        if not isinstance(notifications, list):
+            raise KescoApiError(f"No notifications list in response: {str(data)[:200]}")
+
+        return notifications

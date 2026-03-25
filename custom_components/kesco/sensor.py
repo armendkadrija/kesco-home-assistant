@@ -48,6 +48,10 @@ def _bal(data: dict) -> dict:
     return data.get("balance") or {}
 
 
+def _notifs(data: dict) -> list:
+    return data.get("notifications") or []
+
+
 def _safe_get(invoices: list, index: int) -> dict | None:
     return invoices[index] if len(invoices) > index else None
 
@@ -180,6 +184,28 @@ SENSOR_DESCRIPTIONS: tuple[KescoSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         value_fn=lambda d: len(_invs(d)),
         attr_fn=lambda d: {"invoices": _invs(d)},
+    ),
+    # --- Notifications ---
+    KescoSensorDescription(
+        key="unread_notifications",
+        name="KESCO Unread Notifications",
+        native_unit_of_measurement="notifications",
+        state_class=SensorStateClass.TOTAL,
+        value_fn=lambda d: sum(1 for n in _notifs(d) if not n.get("IsRead")),
+        attr_fn=lambda d: {
+            "notifications": [
+                {
+                    "id": n.get("NotificationId"),
+                    "type": (n.get("NotificationType") or {}).get("NameEN"),
+                    "type_alias": (n.get("NotificationType") or {}).get("Alias"),
+                    "message": n.get("MessageEN"),
+                    "insert_date": n.get("InsertDate"),
+                    "sent_date": n.get("SentDate"),
+                    "is_read": n.get("IsRead"),
+                }
+                for n in _notifs(d)
+            ]
+        },
     ),
     # --- Balance / Account ---
     KescoSensorDescription(

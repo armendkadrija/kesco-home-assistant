@@ -40,4 +40,10 @@ class KescoCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("KESCO balance fetch failed (non-fatal): %s", err)
 
-        return {"invoices": invoices, "balance": balance}
+        notifications: list[dict[str, Any]] = []
+        try:
+            notifications = await self.client.async_get_notifications()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("KESCO notifications fetch failed (non-fatal): %s", err)
+
+        return {"invoices": invoices, "balance": balance, "notifications": notifications}
