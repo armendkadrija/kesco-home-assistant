@@ -49,17 +49,32 @@ class KescoApiClient:
     async def async_get_invoices(self) -> list[dict[str, Any]]:
         """Return the full invoice list, re-authenticating if needed."""
         await self._ensure_token()
-        return await self._fetch_invoices()
+        try:
+            return await self._fetch_invoices()
+        except KescoAuthError:
+            _LOGGER.warning("KESCO invoice 401 — forcing re-login and retrying")
+            await self._login()
+            return await self._fetch_invoices()
 
     async def async_get_balance(self) -> dict[str, Any]:
         """Return the account balance dict, re-authenticating if needed."""
         await self._ensure_token()
-        return await self._fetch_balance()
+        try:
+            return await self._fetch_balance()
+        except KescoAuthError:
+            _LOGGER.warning("KESCO balance 401 — forcing re-login and retrying")
+            await self._login()
+            return await self._fetch_balance()
 
     async def async_get_notifications(self, page_size: int = 10) -> list[dict[str, Any]]:
         """Return the latest notifications, re-authenticating if needed."""
         await self._ensure_token()
-        return await self._fetch_notifications(page_size)
+        try:
+            return await self._fetch_notifications(page_size)
+        except KescoAuthError:
+            _LOGGER.warning("KESCO notifications 401 — forcing re-login and retrying")
+            await self._login()
+            return await self._fetch_notifications(page_size)
 
     async def async_validate_credentials(self) -> None:
         """Login once to verify credentials — raises KescoAuthError on failure."""
