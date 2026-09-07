@@ -193,15 +193,26 @@ under the wrong category. Folding `type` into the same form as
 amount/user/receipt makes one submission atomic; there's nothing left to
 race.
 
-**Keeping the `type` field's options live:** every `add_type`/`remove_type`
-call updates the script's field options through HA's **script config API**
-(the same API the Settings → Scripts UI editor uses to persist changes) —
-never by generating/hand-writing `scripts.yaml`. Per this HA instance's
-best-practices guidance, hand-generated YAML for scripts is a named
-anti-pattern specifically because it skips config validation and requires
-manual reloads; the config API validates and updates the live script in
-place. This also means zero manual `configuration.yaml` setup for the
-user — the script is created and maintained entirely by the integration.
+**Keeping the `type` field's options live:** the integration owns a
+dedicated file, `<config>/expense_tracker_scripts.yaml`, that nothing else
+ever touches — not the user's own `scripts.yaml`. Every `add_type` /
+`remove_type` call (and initial setup) rewrites that one file with the
+current `expense_types.name` list and calls the public, stable
+`script.reload` service. One-time manual setup: add
+`script expense_tracker: !include expense_tracker_scripts.yaml` under a
+`script` key in `configuration.yaml` (HA merges multiple differently-
+suffixed `script <label>:` blocks — same mechanism as `automation ui:` vs
+`automation manual:`).
+
+*(Correction: an earlier draft of this section said to update the script
+through "HA's script config API" to avoid touching YAML entirely. On
+reflection that would mean reaching into the `script` component's internal
+storage-collection object via `hass.data` keys that aren't part of HA's
+documented `homeassistant.helpers.*` integration-author surface — fragile
+against core version changes, arguably worse than the YAML anti-pattern it
+was dodging. A dedicated, exclusively-owned, atomically-written file plus
+the public `script.reload` service is the mechanism that's actually stable,
+at the cost of one one-time config line instead of zero.)*
 
 **Known limitation:** HA's native `select` selector renders option text
 only, no per-option icon — so the type field in the fill-in form will show
