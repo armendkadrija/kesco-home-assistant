@@ -47,17 +47,25 @@ CREATE TABLE expense_types (
 CREATE TABLE expenses (
     id           TEXT PRIMARY KEY,   -- uuid4
     amount       REAL NOT NULL,
-    type_name    TEXT NOT NULL REFERENCES expense_types(name),
+    type_name    TEXT NOT NULL,      -- NOT a real FK, see note below
     user         TEXT NOT NULL,      -- person entity_id, e.g. "person.armend"
     receipt_path TEXT,               -- relative path under www/, nullable
     note         TEXT,               -- nullable
-    timestamp    TEXT NOT NULL       -- ISO 8601 UTC
+    timestamp    TEXT NOT NULL       -- ISO 8601 UTC, backdatable (see add_expense)
 );
 ```
 
 Design note: an expense type's `name` **is** its identifier — no separate
 slug/uuid. Renaming a type is remove + re-add (no `edit_type` action in v1;
 YAGNI until it's actually annoying in practice).
+
+`type_name` is deliberately **not** a real `REFERENCES expense_types(name)`
+foreign key. It can't be: `remove_type` is specified to leave existing
+expenses pointing at the now-deleted name (no cascade, no nulling out
+history) — an enforced FK would make that delete fail with a constraint
+violation instead. Existence is validated in application code, only at
+insert time (`add_expense` rejects an unknown `type`), which is exactly
+where it needs to hold.
 
 On first setup, seed `expense_types` with: Groceries (`mdi:cart`), Transport
 (`mdi:car`), Utilities (`mdi:flash`), Health (`mdi:medical-bag`),
@@ -92,44 +100,48 @@ Domain: `expense_tracker`
 - `expense_tracker.add_expense`
   - `amount` (required, number selector, `min: 0`)
   - `type` (required, string — must match an existing `expense_types.name`;
-    validate and raise `ServiceValidationError` if unknown)
+    validate and raise `ServiceValidationError` if unknown). This is a
+    plain string on the service itself — the *live, dropdown* experience
+    for humans is provided by the wrapper script below, not by this
+    selector.
   - `user` (required, entity selector, `domain: person`; stored as the
     entity_id string, not a live reference — historical records shouldn't
     break if the person entity is later removed)
+  - `date` (optional, date selector; defaults to now if omitted) — logging
+    an expense a day or two after the fact is normal, not an edge case.
   - `receipt` (optional — selector TBD at implementation time, `file` vs
     `image`; verify against current HA selector docs, don't guess the API
     shape here)
   - `note` (optional, text selector)
   - Effect: insert row, save receipt file if present (see Receipts below),
-    then push updated state to both sensors and to
-    `select.expense_tracker_type`'s options (in case this was a new type;
-    in practice types don't change here, but keep the update path uniform).
+    then push updated state to both sensors.
 
 - `expense_tracker.add_type`
   - `name` (required, text selector)
   - `icon` (required, icon selector — HA's native mdi icon picker)
   - Effect: insert row (fail with `ServiceValidationError` on duplicate
-    name), refresh `select.expense_tracker_type` options.
+    name), then update the wrapper script's `type` field options (see
+    Dashboard view) via HA's script config API — not by generating YAML.
 
 - `expense_tracker.remove_type`
   - `name` (required, string — must match an existing type)
   - Effect: delete the type row. Existing expenses keep their historical
     `type_name` value even though it no longer resolves to a live type
-    (don't cascade-delete or null out past records). Refresh the `select`
-    entity's options.
+    (don't cascade-delete or null out past records). Update the wrapper
+    script's `type` field options the same way as `add_type`.
+
+- `expense_tracker.remove_expense`
+  - `id` (required, string)
+  - Effect: delete the row, and delete its receipt file from disk if one
+    exists — otherwise receipt files accumulate forever with nothing
+    pointing at them. Fixing a fat-fingered amount or a duplicate entry
+    is common enough that a v1 without this would be a real gap, not a
+    YAGNI cut.
 
 ## Entities
 
-- `select.expense_tracker_type` — `options` = current `expense_types.name`
-  list, kept in sync on every add/remove. This is the "which type am I
-  logging next" control, standalone on the dashboard.
-
-  **Known limitation:** HA's native `select` dropdown renders option text
-  only — no per-option icon. Icons are still stored and available on every
-  expense record and sensor attribute for use elsewhere; they just won't
-  show inside the dropdown widget itself. Accepted trade-off of going
-  fully native (see custom-card discussion above) — revisit only if this
-  turns out to actually bother the user in practice.
+No standalone `select` entity for type — see "Dashboard view" below for
+why that was cut and where type selection actually lives now.
 
 - `sensor.expense_tracker_total` — state: all-time sum of `amount`,
   `unit_of_measurement`: `hass.config.currency`, `state_class: total`.
@@ -159,17 +171,44 @@ decided, in this spec.
 
 One Lovelace view, native cards only:
 
-1. Entity card for `select.expense_tracker_type`.
-2. A helper script `script.expense_tracker_add_expense` with `fields`:
-   `amount` (number selector), `user` (person entity selector), `receipt`
+1. A helper script `script.expense_tracker_add_expense`, owned and kept in
+   sync by the integration, with `fields`: `type` (select selector, options
+   = current `expense_types.name` list), `amount` (number selector), `user`
+   (person entity selector), `date` (optional date selector), `receipt`
    (optional), `note` (optional text). Sequence: single action calling
-   `expense_tracker.add_expense` with
-   `type: "{{ states('select.expense_tracker_type') }}"` — type is read
-   from the select entity's current state, not asked for again in the
-   form. A button/tile on the view opens this script's auto-generated
-   fill-in dialog.
-3. Stat/tile cards for `sensor.expense_tracker_total` and
+   `expense_tracker.add_expense` passing all of the above straight through.
+   A button/tile on the view opens this script's auto-generated fill-in
+   dialog — one atomic submission, all fields captured together.
+2. Stat/tile cards for `sensor.expense_tracker_total` and
    `sensor.expense_tracker_total_this_month`.
+
+**Why `type` is a field on the script, not a separate `select` entity:** an
+earlier version of this spec put type selection in its own
+`select.expense_tracker_type` entity, read by the script at submit time.
+That's global mutable state doubling as an implicit form parameter — two
+people submitting near-simultaneously could have the type change out from
+under the first person's in-flight form, silently logging their expense
+under the wrong category. Folding `type` into the same form as
+amount/user/receipt makes one submission atomic; there's nothing left to
+race.
+
+**Keeping the `type` field's options live:** every `add_type`/`remove_type`
+call updates the script's field options through HA's **script config API**
+(the same API the Settings → Scripts UI editor uses to persist changes) —
+never by generating/hand-writing `scripts.yaml`. Per this HA instance's
+best-practices guidance, hand-generated YAML for scripts is a named
+anti-pattern specifically because it skips config validation and requires
+manual reloads; the config API validates and updates the live script in
+place. This also means zero manual `configuration.yaml` setup for the
+user — the script is created and maintained entirely by the integration.
+
+**Known limitation:** HA's native `select` selector renders option text
+only, no per-option icon — so the type field in the fill-in form will show
+names, not icons, even though every type has one. Icons are still stored
+and available on every expense record and sensor attribute for use
+elsewhere. Accepted trade-off of staying fully native (see the custom-card
+discussion above) — revisit only if this turns out to actually bother the
+user in practice.
 
 ## Build & test approach
 
