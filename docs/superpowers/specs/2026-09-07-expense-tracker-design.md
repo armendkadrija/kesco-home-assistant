@@ -109,9 +109,10 @@ Domain: `expense_tracker`
     break if the person entity is later removed)
   - `date` (optional, date selector; defaults to now if omitted) — logging
     an expense a day or two after the fact is normal, not an edge case.
-  - `receipt` (optional — selector TBD at implementation time, `file` vs
-    `image`; verify against current HA selector docs, don't guess the API
-    shape here)
+  - `receipt` (optional, `image` selector — not `file`: `image` hands the
+    handler a base64 payload directly in the call, matching "snap a photo
+    on your phone," where `file` is built for a separate upload/fetch
+    step meant for config-flow-style imports)
   - `note` (optional, text selector)
   - Effect: insert row, save receipt file if present (see Receipts below),
     then push updated state to both sensors.
@@ -159,13 +160,13 @@ that will ever exist.
 
 ## Receipts
 
-Uploaded file saved to
-`<config>/www/expense_tracker/receipts/<expense_id>.<ext>`, relative path
-stored in `expenses.receipt_path`. Served at
+`add_expense`'s `receipt` field (`image` selector) delivers a base64
+payload in the call. The handler decodes it and writes it to
+`<config>/www/expense_tracker/receipts/<expense_id>.<ext>`, storing the
+relative path in `expenses.receipt_path`. Served at
 `/local/expense_tracker/receipts/<expense_id>.<ext>` for display in a
-dashboard picture/image card. Exact input selector (`file` vs `image`) to
-be confirmed against current HA docs during implementation — flagged, not
-decided, in this spec.
+dashboard picture/image card. `remove_expense` deletes this file alongside
+the row.
 
 ## Dashboard view
 
