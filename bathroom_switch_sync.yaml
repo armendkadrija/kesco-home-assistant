@@ -1,0 +1,32 @@
+# Bidirectional switch sync for bathroom switches
+# Copy this to your Home Assistant automations.yaml or automation editor
+
+# When Bathroom 1 turns on/off, sync the Fan
+- id: bathroom_1_controls_fan
+  alias: "Bathroom 1 → Fan Sync"
+  trigger:
+    - platform: state
+      entity_id: switch.bathroom_1
+  condition:
+    # Prevent loop: only trigger if this wasn't caused by the other automation
+    - condition: template
+      value_template: "{{ trigger.to_state.context.parent_id == none }}"
+  action:
+    - service: "switch.turn_{{ trigger.to_state.state }}"
+      target:
+        entity_id: switch.bathroom_fan
+
+# When Fan turns on/off, sync Bathroom 1
+- id: bathroom_fan_controls_1
+  alias: "Bathroom Fan → 1 Sync"
+  trigger:
+    - platform: state
+      entity_id: switch.bathroom_fan
+  condition:
+    # Prevent loop: only trigger if this wasn't caused by the other automation
+    - condition: template
+      value_template: "{{ trigger.to_state.context.parent_id == none }}"
+  action:
+    - service: "switch.turn_{{ trigger.to_state.state }}"
+      target:
+        entity_id: switch.bathroom_1

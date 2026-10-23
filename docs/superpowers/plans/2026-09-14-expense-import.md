@@ -844,7 +844,7 @@ git commit -m "Add pure CSV parsing and transaction classification (import_engin
 
 **Interfaces:**
 - Consumes: `db.py`'s Task 1/2 methods; `import_engine.parse_csv_text`, `import_engine.classify_row` (Task 3); `homeassistant.components.file_upload.process_uploaded_file` (same API `receipts.py` already uses); `dt_helpers.local_date_string_to_utc_iso` (already exists).
-- Produces: `ExpenseTrackerRuntime.async_list_import_rules() -> list[tuple[str, str]]`, `async_add_import_rule(pattern, type_name) -> None`, `async_remove_import_rule(pattern) -> None`, `async_reorder_import_rules(ordered_patterns) -> None`, `async_import_csv(file_id: str, dry_run: bool, user: str) -> dict` returning exactly the shape:
+- Produces: `ExpenseTrackerRuntime.async_list_import_rules() -> list[tuple[str, str]]`, `async_add_import_rule(pattern, type_name) -> None`, `async_remove_import_rule(pattern) -> None`, `async_reorder_import_rules(ordered_patterns) -> None`, `async_import_csv(file_id: str, dry_run: bool, user: str | None) -> dict` (`user` is only ever read on the commit path — a dry run never uses it, so callers may pass `None` for a pure preview) returning exactly the shape:
   ```python
   {
       "imported": int, "skipped_duplicate": int, "excluded_roundup": int,
@@ -991,7 +991,7 @@ Add the new methods immediately after `async_reorder_types` and before `async_ad
             self.db.reorder_import_rules, ordered_patterns
         )
 
-    async def async_import_csv(self, file_id: str, dry_run: bool, user: str) -> dict:
+    async def async_import_csv(self, file_id: str, dry_run: bool, user: str | None) -> dict:
         """Parse an uploaded bank CSV, classify every row against the
         current import_rules, and either report what would happen
         (dry_run=True) or actually write the matched rows (dry_run=False).
@@ -1206,20 +1206,27 @@ async def test_add_import_rule_rejects_unknown_type(hass, tmp_path):
 
 
 async def test_import_csv_service_resolves_user_from_context_and_writes(
-    hass, tmp_path, stage_uploaded_file, hass_admin_user,
+    hass, tmp_path, stage_uploaded_file,
 ):
+    """Same context-resolution pattern as the existing
+    test_add_expense_resolves_user_from_calling_context_when_omitted in
+    test_services.py: a fake user_id tied to a person entity via
+    Context, not a real admin-user fixture -- import_csv has no `user`
+    field to override with, so this path is the ONLY way it ever gets
+    attributed, unlike add_expense."""
+    from homeassistant.core import Context
+
     await _setup(hass, tmp_path)
+    hass.states.async_set("person.armend", "home", {"user_id": "the-caller"})
     await hass.services.async_call(
         DOMAIN, "add_import_rule", {"pattern": "SPAR", "type": "Groceries"}, blocking=True,
     )
     file_id = await stage_uploaded_file("statement.csv", (HEADER + ROW).encode("utf-8"))
 
-    from homeassistant.core import Context
-
     result = await hass.services.async_call(
         DOMAIN, "import_csv", {"file_id": file_id, "dry_run": False},
         blocking=True, return_response=True,
-        context=Context(user_id=hass_admin_user.id),
+        context=Context(user_id="the-caller"),
     )
 
     assert result["imported"] == 1
@@ -1227,9 +1234,31 @@ async def test_import_csv_service_resolves_user_from_context_and_writes(
         DOMAIN, "list_expenses", {}, blocking=True, return_response=True,
     )
     assert len(expenses["expenses"]) == 1
+    assert expenses["expenses"][0]["user"] == "person.armend"
 
 
-async def test_import_csv_dry_run_true_writes_nothing(hass, tmp_path, stage_uploaded_file):
+async def test_import_csv_commit_without_linked_person_raises(hass, tmp_path, stage_uploaded_file):
+    """dry_run=False with no resolvable person must fail clearly, same
+    shape as add_expense's existing unresolvable-user test."""
+    await _setup(hass, tmp_path)
+    await hass.services.async_call(
+        DOMAIN, "add_import_rule", {"pattern": "SPAR", "type": "Groceries"}, blocking=True,
+    )
+    file_id = await stage_uploaded_file("statement.csv", (HEADER + ROW).encode("utf-8"))
+
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN, "import_csv", {"file_id": file_id, "dry_run": False},
+            blocking=True, return_response=True,
+        )
+
+
+async def test_import_csv_dry_run_true_writes_nothing_and_needs_no_linked_person(
+    hass, tmp_path, stage_uploaded_file,
+):
+    """A dry run never uses `user` at all, so it must succeed even with
+    no person linked to the calling account -- previewing shouldn't be
+    gated behind the same requirement only committing actually needs."""
     await _setup(hass, tmp_path)
     await hass.services.async_call(
         DOMAIN, "add_import_rule", {"pattern": "SPAR", "type": "Groceries"}, blocking=True,
@@ -1247,8 +1276,6 @@ async def test_import_csv_dry_run_true_writes_nothing(hass, tmp_path, stage_uplo
     )
     assert len(expenses["expenses"]) == 0
 ```
-
-`hass_admin_user` is a standard fixture provided by `pytest_homeassistant_custom_component` (verified present in this project's pinned version) — no setup needed beyond adding it as a test parameter, same as `hass`/`tmp_path`.
 
 - [ ] **Step 2: Run them, confirm they fail**
 
@@ -1331,17 +1358,23 @@ Add the new handlers inside `async_register_services`, after `handle_reorder_typ
         return {"rules": [{"pattern": p, "type": t} for p, t in rules]}
 
     async def handle_import_csv(call: ServiceCall) -> dict:
-        user = _resolve_user_from_context(hass, call.context.user_id)
-        if user is None:
-            raise ServiceValidationError(
-                "Could not determine who these expenses belong to: no "
-                "person is linked to your Home Assistant user account. "
-                "Link your account under Settings > People and try again."
-            )
+        dry_run = call.data["dry_run"]
+        # A dry run never writes anything, so it never needs `user` --
+        # only require a resolvable person for a real commit. Gating
+        # preview on the same check as commit would block someone from
+        # even previewing an import just because their HA account isn't
+        # linked to a person yet.
+        user = None
+        if not dry_run:
+            user = _resolve_user_from_context(hass, call.context.user_id)
+            if user is None:
+                raise ServiceValidationError(
+                    "Could not determine who these expenses belong to: no "
+                    "person is linked to your Home Assistant user account. "
+                    "Link your account under Settings > People and try again."
+                )
         try:
-            return await runtime.async_import_csv(
-                call.data["file_id"], call.data["dry_run"], user
-            )
+            return await runtime.async_import_csv(call.data["file_id"], dry_run, user)
         except CsvFormatError as err:
             raise ServiceValidationError(str(err)) from err
 ```
