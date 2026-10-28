@@ -1,14 +1,11 @@
 """KESCO Energy integration."""
 from __future__ import annotations
 
-import aiohttp
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import KescoApiClient
+from .api import KescoApiClient, async_create_kesco_session
 from .const import DOMAIN, CONF_AGENCY_ID, CONF_DEBITOR_ID
 from .coordinator import KescoCoordinator
 
@@ -16,7 +13,9 @@ PLATFORMS = [Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    session = async_get_clientsession(hass)
+    session = await async_create_kesco_session(hass)
+    # Closes on unload and on setup failure (HA runs unload callbacks in both cases)
+    entry.async_on_unload(session.close)
     client = KescoApiClient(
         username=entry.data["username"],
         password=entry.data["password"],

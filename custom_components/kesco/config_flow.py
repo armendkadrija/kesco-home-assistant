@@ -6,9 +6,9 @@ import logging
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import KescoApiClient, KescoAuthError, KescoApiError
+
+from .api import KescoApiClient, KescoAuthError, KescoApiError, async_create_kesco_session
 from .const import DOMAIN, CONF_DEBITOR_ID, CONF_AGENCY_ID, DEFAULT_AGENCY_ID
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class KescoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            session = async_get_clientsession(self.hass)
+            session = await async_create_kesco_session(self.hass)
             client = KescoApiClient(
                 username=user_input["username"],
                 password=user_input["password"],
@@ -41,7 +41,8 @@ class KescoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 session=session,
             )
             try:
-                await client.async_validate_credentials()
+                async with session:
+                    await client.async_validate_credentials()
             except KescoAuthError as err:
                 _LOGGER.error("KESCO auth error: %s", err)
                 errors["base"] = "invalid_auth"

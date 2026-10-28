@@ -3,15 +3,34 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import time
 import logging
 from typing import Any
 
 import aiohttp
+import certifi
+
+from homeassistant.core import HomeAssistant
 
 from .const import AUTH_URL, BALANCE_URL, INVOICES_URL, NOTIFICATIONS_URL, TOKEN_TTL_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _legacy_ssl_context() -> ssl.SSLContext:
+    # fatura.kesco-energy.com lacks RFC 5746 secure renegotiation, which OpenSSL 3
+    # rejects by default. Allow it for this host only via a dedicated context —
+    # never mutate HA's shared (cached) client context.
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+    return ctx
+
+
+async def async_create_kesco_session(hass: HomeAssistant) -> aiohttp.ClientSession:
+    """Return a session that can talk to KESCO's legacy TLS server. Caller closes it."""
+    ctx = await hass.async_add_executor_job(_legacy_ssl_context)
+    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx))
 
 
 class KescoAuthError(Exception):
